@@ -1,0 +1,175 @@
+Linux shell pipe and redirect
+_This blog is edited and translated from the [original blog](http://www.cnblogs.com/chengmo/archive/2010/10/20/1855805.html)._
+
+# File descriptor
+There is a [wiki](https://en.wikipedia.org/wiki/File_descriptor) page that explains this concept in detail. To summarize:
+
+* File descriptor is an abstract indicator(handle) to access file or other input resource (e.g. pipe or network socket) on **Linux/Unix** os. 
+* After Linux starts up, it opens three standard POSIX file descriptors by default:
+
+| Integer value | Name            | <unistd.h> symbolic constant[1] | <stdio.h> file stream[2] |
+|---------------|-----------------|---------------------------------|--------------------------|
+| 0             | Standard input  | STDIN_FILENO                    | stdin                    |
+| 1             | Standard output | STDOUT_FILENO                   | stdout                   |
+| 2             | Standard error  | STDERR_FILENO                   | stderr                   |
+
+
+* File descriptor is a non-negative integer that is essentially the **index** into a per-process **file descriptor table** maintained by the kernel.
+* On Linux, the FD open in a process can be accessed under `/proc/PID/fd/`
+
+# Execute a Linux command
+
+Each Linux command is excuted in the following way
+
+```
++-----------------+            +-------------+             +---------------+
+|                 |   stdin    |             |   stdout    |               |
+|  file/keyboard  +----------->+   command   +------------>+  file/device  |
+|                 |            |             |             |               |
++-----------------+            +------+------+             +---------------+
+                                      |
+                                      |  stderr
+                                      |
+                                      v
+                              +-------+--------+
+                              |                |
+                              |  file/device   |
+                              |                |
+                              +----------------+
+
+```
+
+1. First, read the command from file/keyboard.
+2. After the command is executed, it will 'print' the `stdout` to screen or file if succeeds.
+3. If the execution fails, 'print' the `stderr` to screen or file.
+
+The input/output file is identified by the file descriptor (maintained by a given process). Before the command is executed, the system will bind 0, 1, 2 to `stdin`, `stdout` and `stderr`. If there any error occurs during this stage, the command will not be executed.
+
+If we don't want to 'print' the result to default device (usaully screen), we can use `redirect` operator to change the destination.
+
+# Output redirection:
+
+* Format: `command-line [1-n] > file/fd/device`
+* Meaning: Redirect the result(`stdout`/`stderr`) of the first command to another device 
+* Example:
+
+```shell
+# Preperation:
+→ touch test.sh
+
+# Both stdout and stderr are printed on the screen
+→ ls test.sh test1.sh
+ls: test1.sh: No such file or directory
+test.sh
+
+# Now write stdout to file suc.txt
+# '1' can be omitted, default is stdout
+→ ls test.sh test1.sh 1> suc.txt
+ls: test1.sh: No such file or directory
+
+→ cat suc.txt
+test.sh
+
+# Write stderr to file err.text
+→ ls test.sh test1.sh 2> err.txt
+test.sh
+
+→ cat suc.txt err.txt
+test.sh
+ls: test1.sh: No such file or directory
+
+# Use '>>' to concatenate the result to the end of the file
+→ ls test.sh test1.sh 1>> suc.txt 2>> err.txt
+
+# &[n] represents existing FD, &1 means stdout and &2 means stdin. &- means close the FD
+→ ls test.sh test1.sh 2>&-
+test.sh
+# /dev/null is a device that swallows everything
+→ ls test.sh test1.sh 2>/dev/null
+test.sh
+
+# Close FD 1, 2
+→ ls test.sh test1.sh  1>&- 2>&-
+
+# Attention! Bind stderr to FD1 and print success result to /dev/null
+→ ls test.sh test1.sh >/dev/null 2>&1
+
+# Similarly
+→ ls test.sh test1.sh  2>&1 >/dev/null
+ls: test1.sh: No such file or directory
+
+# '&' means both stdout and stderr
+→ ls test.sh test1.sh &>/dev/null
+
+```
+* After the execution, the bounded FDs are released and 0, 1, 2 become idle again.
+
+# Input redirection:
+
+* Format: `command-line [n] < file/fd/device`
+* Meaning: Redirect `stdin` from other file/device
+* Example:
+
+```shell
+# Preparation
+→ cat > testfile
+testing line 1
+testing line 2
+# press 'control + d'
+
+# Got input from testfile
+→ cat > catfile < testfile
+
+→ cat catfile
+testing line 1
+testing line 2
+```
+
+# Use `exec` to bind redirection
+* Format: `exec [file descriptor n] < or > file/fd/device`
+* Meaning: bind `stdin`, `stdout` and `stderr` to new file/fd/device for later commands.
+* Example:
+
+```shell
+# /dev/fd is a symbolic link to /proc/self/fd
+→ ls -al /dev/fd
+total 0
+crw--w----   1 jiyue  tty          16,   0 Sep 21 20:07 0
+crw--w----   1 jiyue  tty          16,   0 Sep 21 20:07 1
+crw--w----   1 jiyue  tty          16,   0 Sep 21 20:07 2
+prw-rw----   0 jiyue  1876110778         0 Sep 21 20:04 3
+drw-r--r--  83 jiyue  1876110778      2822 Sep 21 20:07 4
+dr--r--r--   1 root   wheel              0 Sep 17 06:53 5
+
+# Bind fd 6 with stdin
+→ exec 6>&1
+→ ls -al /dev/fd
+total 0
+crw--w----   1 jiyue  tty          16,   0 Sep 21 20:08 0
+crw--w----   1 jiyue  tty          16,   0 Sep 21 20:08 1
+crw--w----   1 jiyue  tty          16,   0 Sep 21 20:08 2
+prw-rw----   0 jiyue  1876110778         0 Sep 21 20:04 3
+drw-r--r--  83 jiyue  1876110778      2822 Sep 21 20:08 4
+dr--r--r--   1 root   wheel              0 Sep 17 06:53 5
+crw--w----   1 jiyue  tty          16,   0 Sep 21 20:08 6
+
+# Bind stdout to suc.txt for all the following commands
+→ exec 1>suc.txt
+
+→ ls -al
+# Nothing appears on the screen! The output is saved in suc.txt instead.
+
+# Recover stdout
+→ exec 1>&6
+
+# Close fd 6
+exec 6>&-
+```
+What if we forget to save fd1 to fd6 and use `exec 1>suc.txt` directly?
+> I don't know the correct answer, but as file descriptor is associated with the process, we could just kill this process.
+
+
+
+
+
+
